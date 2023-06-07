@@ -1,0 +1,165 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: "AWS Aurora MySQL 13.8"
+
+Parameters:
+  
+  VPCID:
+    Type: 'AWS::EC2::VPC::Id'
+    Description: "ID of the VPC you are deploying Aurora into."
+  
+  Subnet1ID:
+    Type: 'AWS::EC2::Subnet::Id'
+    Description: The ID of the private subnet in Availability Zone 1.
+  
+  Subnet2ID:
+    Type: 'AWS::EC2::Subnet::Id'
+    Description: The ID of the private subnet in Availability Zone 2.
+
+Resources:
+  
+  RDSSecurityGroup:
+    Properties:
+      GroupDescription: "Allow access to database port"
+      SecurityGroupEgress:
+        - CidrIp: 0.0.0.0/0
+          FromPort: -1
+          IpProtocol: '-1'
+          ToPort: -1
+      SecurityGroupIngress:
+        - CidrIp: 10.0.0.0/16
+          FromPort: 3306
+          IpProtocol: tcp
+          ToPort: 3306
+      VpcId: !Ref VPCID
+    Type: "AWS::EC2::SecurityGroup"
+  
+  RDSSecurityGroupIngress:
+    Properties:
+      GroupId: !GetAtt 'RDSSecurityGroup.GroupId'
+      IpProtocol: '-1'
+      SourceSecurityGroupId: !Ref RDSSecurityGroup
+      Description: 'Self Reference'
+    Type: 'AWS::EC2::SecurityGroupIngress'
+  
+  EncryptionKey:
+    DeletionPolicy: Delete
+    Type: AWS::KMS::Key
+    Properties:
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: 2012-10-17
+        Id: !Ref AWS::StackName
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS:
+                - !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:root"
+            Action: 'kms:*'
+            Resource: '*'
+          - Effect: Allow
+            Principal:
+              AWS: '*'
+            Action: 
+              - kms:Decrypt
+              - kms:DescribeKey
+            Resource: '*'
+            Condition:
+              StringEquals:
+                "kms:CallerAccount": !Ref AWS::AccountId
+                "kms:ViaService": !Sub "secretsmanager.${AWS::Region}.amazonaws.com"
+  
+  EncryptionKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub "alias/${AWS::StackName}"
+      TargetKeyId: !Ref EncryptionKey
+  
+  DBParamGroup:
+    Type: AWS::RDS::DBParameterGroup
+    Properties:
+      Description: !Sub "Aurora MySQL Database Instance Parameter Group for Cloudformation Stack ${AWS::StackName}"
+      Family: aurora-mysql8.0
+  
+  AuroraDBSubnetGroup:
+    Properties:
+      DBSubnetGroupDescription: "Subnets available for the Amazon Aurora database instance"
+      SubnetIds:
+       - !Ref Subnet1ID
+       - !Ref Subnet2ID
+    Type: "AWS::RDS::DBSubnetGroup"
+
+  RDSDBClusterParameterGroup:
+    Type: AWS::RDS::DBClusterParameterGroup
+    Properties:
+      Description: !Sub "Aurora MySQL Cluster Parameter Group for Cloudformation Stack ${AWS::StackName}"
+      Family: aurora-mysql8.0
+      Parameters:
+        binlog_format: 'ROW'
+        binlog_row_image: 'Full'
+        binlog_checksum: 'NONE'
+  
+  AuroraDBCluster:
+    Type: "AWS::RDS::DBCluster"
+    Properties:
+      BackupRetentionPeriod: 35
+      DBClusterParameterGroupName: !Ref RDSDBClusterParameterGroup
+      DBSubnetGroupName: !Ref AuroraDBSubnetGroup
+      Engine: aurora-mysql
+      EngineVersion: 8.0.mysql_aurora.3.02.0
+      KmsKeyId: !GetAtt EncryptionKey.Arn
+      MasterUserPassword: Admin123#
+      MasterUsername: dbadmin
+      Port: 3306
+      StorageEncrypted: true
+      ServerlessV2ScalingConfiguration:
+        MaxCapacity: 16
+        MinCapacity: 0.5
+      VpcSecurityGroupIds: 
+        - !Ref RDSSecurityGroup
+      EnableHttpEndpoint: true
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+
+  AuroraDBInstance1:
+    Type: 'AWS::RDS::DBInstance'
+    Properties:
+      Engine: aurora-mysql
+      DBInstanceClass: db.serverless
+      DBClusterIdentifier: !Ref AuroraDBCluster
+
+  AuroraCredentialsSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub ${AWS::StackName}-credentials-secret
+      KmsKeyId: !GetAtt EncryptionKey.Arn
+      SecretString: !Sub '{"username": "dbadmin", "password": "Admin123#", "host": "${AuroraDBCluster.Endpoint.Address}", "port": "3306"}'
+
+Outputs:
+
+  DBEngine:
+    Description: "Database engine"
+    Value: aurora-mysql
+  
+  DBMasterUsername:
+    Description: "Amazon Aurora database master username"
+    Value: dbadmin
+
+  DBMasterPassword:
+    Description: "Amazon Aurora database master password"
+    Value: Admin123#
+  
+  RDSEndPointAddress:
+    Description: "Amazon Aurora write endpoint"
+    Value: !Sub ${AuroraDBCluster.Endpoint.Address}
+  
+  RDSEndPointPort:
+    Description: "Amazon Aurora endpoint port"
+    Value: 3306
+  
+  RDSEncryptionKeyId:
+    Description: The id of the encryption key created for RDS
+    Value: !Ref EncryptionKey
+
+  AuroraCredentialsSecret:
+    Description: The secret with database credentials
+    Value: !Ref AuroraCredentialsSecret

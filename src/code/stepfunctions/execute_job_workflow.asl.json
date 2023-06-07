@@ -1,0 +1,194 @@
+{
+    "Comment": "State machine to orachestrate DMS task execution",
+    "StartAt": "Get job config from DynamoDB",
+    "States": {
+        "Get job config from DynamoDB": {
+            "Type": "Task",
+            "Parameters": {
+                "TableName": "${job-config-table}",
+                "KeyConditionExpression": "job_name = :value",
+                "ExpressionAttributeValues": {
+                    ":value": {
+                        "S.$": "$.JobName"
+                    }
+                },
+                "ScanIndexForward": "True"
+            },
+            "Resource": "arn:aws:states:::aws-sdk:dynamodb:query",
+            "Next": "Create task",
+            "ResultPath": "$.JobConfig",
+            "ResultSelector": {
+                "job_name.$": "$.Items[0].job_name.S",
+                "job_checkpoint_name.$": "$.Items[0].job_checkpoint_name.S",
+                "migration_type.$": "$.Items[0].migration_type.S",
+                "source_endpoint_id.$": "$.Items[0].source_endpoint_id.S",
+                "target_endpoint_id.$": "$.Items[0].target_endpoint_id.S"
+            }
+        },
+        "Create task": {
+            "Next": "Is task done?",
+            "Parameters": {
+                "FunctionName": "${create_replication_task_lambda_arn}",
+                "Payload.$": "$"
+            },
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "ResultPath": "$.TaskDetails",
+            "ResultSelector": {
+                "ReplicationTaskIdentifier.$": "$.Payload.ReplicationTaskIdentifier",
+                "SourceEndpointArn.$": "$.Payload.SourceEndpointArn",
+                "TargetEndpointArn.$": "$.Payload.TargetEndpointArn",
+                "ReplicationInstanceArn.$": "$.Payload.ReplicationInstanceArn",
+                "MigrationType.$": "$.Payload.MigrationType",
+                "Status.$": "$.Payload.Status",
+                "ReplicationTaskCreationDate.$": "$.Payload.ReplicationTaskCreationDate",
+                "ReplicationTaskArn.$": "$.Payload.ReplicationTaskArn",
+                "StartReplicationTaskType.$": "$.Payload.StartReplicationTaskType"
+            },
+            "Type": "Task"
+        },
+        "Is task done?": {
+            "Choices": [
+                {
+                    "Next": "Wait for task status update",
+                    "Or": [
+                        {
+                            "StringEquals": "creating",
+                            "Variable": "$.TaskDetails.Status.LatestStatus"
+                        },
+                        {
+                            "StringEquals": "starting",
+                            "Variable": "$.TaskDetails.Status.LatestStatus"
+                        },
+                        {
+                            "StringEquals": "running",
+                            "Variable": "$.TaskDetails.Status.LatestStatus"
+                        },
+                        {
+                            "StringEquals": "stopping",
+                            "Variable": "$.TaskDetails.Status.LatestStatus"
+                        }
+                    ]
+                },
+                {
+                    "Next": "Start task",
+                    "StringEquals": "ready",
+                    "Variable": "$.TaskDetails.Status.LatestStatus"
+                },
+                {
+                    "Next": "Persist task outputs",
+                    "StringEquals": "stopped",
+                    "Variable": "$.TaskDetails.Status.LatestStatus"
+                }
+            ],
+            "Default": "Error",
+            "Type": "Choice"
+        },
+        "Wait for task status update": {
+            "Next": "Get task status",
+            "Seconds": 30,
+            "Type": "Wait"
+        },
+        "Get task status": {
+            "Next": "Is task done?",
+            "Parameters": {
+                "Filters": [
+                    {
+                        "Name": "replication-task-arn",
+                        "Values.$": "States.Array($.TaskDetails.ReplicationTaskArn)"
+                    }
+                ]
+            },
+            "Resource": "arn:aws:states:::aws-sdk:databasemigration:describeReplicationTasks",
+            "ResultPath": "$.TaskDetails.Status",
+            "ResultSelector": {
+                "LatestStatus.$": "$.ReplicationTasks[0].Status"
+            },
+            "Type": "Task"
+        },
+        "Start task": {
+            "Next": "Is task done?",
+            "Parameters": {
+                "ReplicationTaskArn.$": "$.TaskDetails.ReplicationTaskArn",
+                "StartReplicationTaskType.$": "$.TaskDetails.StartReplicationTaskType"
+            },
+            "Resource": "arn:aws:states:::aws-sdk:databasemigration:startReplicationTask",
+            "ResultPath": "$.TaskDetails.Status",
+            "ResultSelector": {
+                "LatestStatus.$": "$.ReplicationTask.Status"
+            },
+            "Type": "Task"
+        },
+        "Persist task outputs": {
+            "Next": "Notify task outputs",
+            "Parameters": {
+                "FunctionName": "${persist_task_outputs_lambda_arn}",
+                "Payload.$": "$"
+            },
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "ResultPath": "$.TaskDetails",
+            "ResultSelector": {
+                "ReplicationTaskIdentifier.$": "$.Payload.ReplicationTaskIdentifier",
+                "SourceEndpointArn.$": "$.Payload.SourceEndpointArn",
+                "TargetEndpointArn.$": "$.Payload.TargetEndpointArn",
+                "ReplicationInstanceArn.$": "$.Payload.ReplicationInstanceArn",
+                "MigrationType.$": "$.Payload.MigrationType",
+                "Status.$": "$.Payload.Status",
+                "StopReason.$": "$.Payload.StopReason",
+                "ReplicationTaskCreationDate.$": "$.Payload.ReplicationTaskCreationDate",
+                "ReplicationTaskStartDate.$": "$.Payload.ReplicationTaskStartDate",
+                "StartReplicationTaskType.$": "$.Payload.StartReplicationTaskType",
+                "CdcStopPosition.$": "$.Payload.CdcStopPosition",
+                "RecoveryCheckpoint.$": "$.Payload.RecoveryCheckpoint",
+                "ReplicationTaskArn.$": "$.Payload.ReplicationTaskArn",
+                "ReplicationTaskStats.$": "$.Payload.ReplicationTaskStats"
+            },
+            "Type": "Task"
+        },
+        "Notify task outputs": {
+            "Type": "Task",
+            "Next": "Send success event",
+            "Resource": "arn:aws:states:::sns:publish",
+            "Parameters": {
+                "TopicArn": "${notifications-topic-arn}",
+                "Message": {
+                    "WorkflowName.$": "$$.StateMachine.Name",
+                    "ExecutionName.$": "$$.Execution.Name",
+                    "JobName.$": "$.JobName",
+                    "InstanceName.$": "$.InstanceName",
+                    "JobConfig.$": "$.JobConfig",
+                    "TaskDetails.$": "$.TaskDetails"
+                }
+            },
+            "ResultPath": "$.SNSOutput"
+        },
+        "Send success event": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::events:putEvents",
+            "Parameters": {
+                "Entries": [
+                    {
+                        "Detail": {
+                            "WorkflowName.$": "$$.StateMachine.Name",
+                            "WorkflowStatus": "SUCCEEDED",
+                            "WorkflowOutput": {
+                                "JobName.$": "$.JobName",
+                                "InstanceName.$": "$.InstanceName",
+                                "JobConfig.$": "$.JobConfig",
+                                "TaskDetails.$": "$.TaskDetails"
+                            }
+                        },
+                        "DetailType": "Replication workflow message",
+                        "EventBusName": "${replication-event-bus-name}",
+                        "Source": "custom.replication"
+                    }
+                ]
+            },
+            "ResultPath": "$.EventsOutput",
+            "End": true
+        },
+        "Error": {
+            "Type": "Fail",
+            "Error": "Error"
+        }
+    }
+}

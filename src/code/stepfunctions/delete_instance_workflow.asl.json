@@ -1,0 +1,106 @@
+{
+    "Comment": "State machine to orachestrate DMS instance deletion",
+    "StartAt": "Get replication instance status",
+    "States": {
+        "Get replication instance status": {
+            "Type": "Task",
+            "Next": "Is the replication instance deleted?",
+            "Parameters": {
+                "Filters": [
+                    {
+                        "Name": "replication-instance-id",
+                        "Values.$": "States.Array($.InstanceName)"
+                    }
+                ]
+            },
+            "Resource": "arn:aws:states:::aws-sdk:databasemigration:describeReplicationInstances",
+            "ResultPath": "$.InstanceDetails",
+            "ResultSelector": {
+                "AllocatedStorage.$": "$.ReplicationInstances[0].AllocatedStorage",
+                "EngineVersion.$": "$.ReplicationInstances[0].EngineVersion",
+                "MultiAZ.$": "$.ReplicationInstances[0].MultiAZ",
+                "NetworkType.$": "$.ReplicationInstances[0].NetworkType",
+                "PubliclyAccessible.$": "$.ReplicationInstances[0].PubliclyAccessible",
+                "ReplicationInstanceArn.$": "$.ReplicationInstances[0].ReplicationInstanceArn",
+                "ReplicationInstanceIdentifier.$": "$.ReplicationInstances[0].ReplicationInstanceIdentifier",
+                "ReplicationInstanceStatus.$": "$.ReplicationInstances[0].ReplicationInstanceStatus"
+            },
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "DatabaseMigration.ResourceNotFoundException"
+                    ],
+                    "ResultPath": "$.InstanceException",
+                    "Next": "Send success event"
+                }
+            ]
+        },
+        "Is the replication instance deleted?": {
+            "Type": "Choice",
+            "Choices": [
+                {
+                    "Variable": "$.InstanceDetails.ReplicationInstanceStatus",
+                    "StringEquals": "deleting",
+                    "Next": "Wait for replication instance deletion"
+                },
+                {
+                    "Variable": "$.InstanceDetails.ReplicationInstanceStatus",
+                    "StringEquals": "available",
+                    "Next": "Delete replication instance"
+                }
+            ],
+            "Default": "Error"
+        },
+        "Delete replication instance": {
+            "Type": "Task",
+            "Next": "Wait for replication instance deletion",
+            "Parameters": {
+                "ReplicationInstanceArn.$": "$.InstanceDetails.ReplicationInstanceArn"
+            },
+            "Resource": "arn:aws:states:::aws-sdk:databasemigration:deleteReplicationInstance",
+            "ResultPath": "$.InstanceDetails",
+            "ResultSelector": {
+                "AllocatedStorage.$": "$.ReplicationInstance.AllocatedStorage",
+                "EngineVersion.$": "$.ReplicationInstance.EngineVersion",
+                "MultiAZ.$": "$.ReplicationInstance.MultiAZ",
+                "NetworkType.$": "$.ReplicationInstance.NetworkType",
+                "PubliclyAccessible.$": "$.ReplicationInstance.PubliclyAccessible",
+                "ReplicationInstanceArn.$": "$.ReplicationInstance.ReplicationInstanceArn",
+                "ReplicationInstanceIdentifier.$": "$.ReplicationInstance.ReplicationInstanceIdentifier",
+                "ReplicationInstanceStatus.$": "$.ReplicationInstance.ReplicationInstanceStatus"
+            }
+        },
+        "Wait for replication instance deletion": {
+            "Type": "Wait",
+            "Seconds": 60,
+            "Next": "Get replication instance status"
+        },
+        "Send success event": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::events:putEvents",
+            "Parameters": {
+                "Entries": [
+                    {
+                        "Detail": {
+                            "WorkflowName.$": "$$.StateMachine.Name",
+                            "WorkflowStatus": "SUCCEEDED",
+                            "WorkflowOutput": {
+                                "JobName.$": "$.JobName",
+                                "InstanceName.$": "$.InstanceName",
+                                "InstanceDetails.$": "$.InstanceDetails"
+                            }
+                        },
+                        "DetailType": "Replication workflow message",
+                        "EventBusName": "${replication-event-bus-name}",
+                        "Source": "custom.replication"
+                    }
+                ]
+            },
+            "End": true
+        },
+        "Error": {
+            "Type": "Fail",
+            "Error": "Error"
+        }
+    }
+}

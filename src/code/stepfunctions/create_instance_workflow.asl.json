@@ -1,0 +1,127 @@
+{
+    "Comment": "State machine to orachestrate DMS instance creation",
+    "StartAt": "Get instance config from DynamoDB",
+    "States": {
+        "Get instance config from DynamoDB": {
+            "Type": "Task",
+            "Parameters": {
+                "TableName": "${instance-config-table}",
+                "KeyConditionExpression": "instance_name = :value",
+                "ExpressionAttributeValues": {
+                    ":value": {
+                        "S.$": "$.InstanceName"
+                    }
+                },
+                "ScanIndexForward": "True"
+            },
+            "Resource": "arn:aws:states:::aws-sdk:dynamodb:query",
+            "Next": "Create replication instance",
+            "ResultPath": "$.InstanceConfig",
+            "ResultSelector": {
+                "instance_name.$": "$.Items[0].instance_name.S",
+                "instance_type.$": "$.Items[0].instance_type.S",
+                "subnet_group.$": "$.Items[0].subnet_group.S",
+                "security_group.$": "$.Items[0].security_group.S",
+                "availability_zone.$": "$.Items[0].availability_zone.S",
+                "publicly_accessible.$": "$.Items[0].publicly_accessible.S"
+            }
+        },
+        "Create replication instance": {
+            "Type": "Task",
+            "Next": "Is the replication instance ready?",
+            "Parameters": {
+                "ReplicationInstanceIdentifier.$": "$.InstanceConfig.instance_name",
+                "ReplicationInstanceClass.$": "$.InstanceConfig.instance_type",
+                "ReplicationSubnetGroupIdentifier.$": "$.InstanceConfig.subnet_group",
+                "VpcSecurityGroupIds.$": "States.Array($.InstanceConfig.security_group)",
+                "AvailabilityZone.$": "$.InstanceConfig.availability_zone",
+                "PubliclyAccessible.$": "$.InstanceConfig.publicly_accessible"
+            },
+            "Resource": "arn:aws:states:::aws-sdk:databasemigration:createReplicationInstance",
+            "ResultPath": "$.InstanceDetails",
+            "ResultSelector": {
+                "AllocatedStorage.$": "$.ReplicationInstance.AllocatedStorage",
+                "EngineVersion.$": "$.ReplicationInstance.EngineVersion",
+                "MultiAZ.$": "$.ReplicationInstance.MultiAZ",
+                "NetworkType.$": "$.ReplicationInstance.NetworkType",
+                "PubliclyAccessible.$": "$.ReplicationInstance.PubliclyAccessible",
+                "ReplicationInstanceArn.$": "$.ReplicationInstance.ReplicationInstanceArn",
+                "ReplicationInstanceIdentifier.$": "$.ReplicationInstance.ReplicationInstanceIdentifier",
+                "ReplicationInstanceStatus.$": "$.ReplicationInstance.ReplicationInstanceStatus"
+            }
+        },
+        "Is the replication instance ready?": {
+            "Type": "Choice",
+            "Choices": [
+                {
+                    "Variable": "$.InstanceDetails.ReplicationInstanceStatus",
+                    "StringEquals": "creating",
+                    "Next": "Wait"
+                },
+                {
+                    "Variable": "$.InstanceDetails.ReplicationInstanceStatus",
+                    "StringEquals": "available",
+                    "Next": "Send success event"
+                }
+            ],
+            "Default": "Error"
+        },
+        "Wait": {
+            "Type": "Wait",
+            "Seconds": 60,
+            "Next": "Get replication instance status"
+        },
+        "Get replication instance status": {
+            "Type": "Task",
+            "Next": "Is the replication instance ready?",
+            "Parameters": {
+                "Filters": [
+                    {
+                        "Name": "replication-instance-arn",
+                        "Values.$": "States.Array($.InstanceDetails.ReplicationInstanceArn)"
+                    }
+                ]
+            },
+            "Resource": "arn:aws:states:::aws-sdk:databasemigration:describeReplicationInstances",
+            "ResultPath": "$.InstanceDetails",
+            "ResultSelector": {
+                "AllocatedStorage.$": "$.ReplicationInstances[0].AllocatedStorage",
+                "EngineVersion.$": "$.ReplicationInstances[0].EngineVersion",
+                "MultiAZ.$": "$.ReplicationInstances[0].MultiAZ",
+                "NetworkType.$": "$.ReplicationInstances[0].NetworkType",
+                "PubliclyAccessible.$": "$.ReplicationInstances[0].PubliclyAccessible",
+                "ReplicationInstanceArn.$": "$.ReplicationInstances[0].ReplicationInstanceArn",
+                "ReplicationInstanceIdentifier.$": "$.ReplicationInstances[0].ReplicationInstanceIdentifier",
+                "ReplicationInstanceStatus.$": "$.ReplicationInstances[0].ReplicationInstanceStatus"
+            }
+        },
+        "Send success event": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::events:putEvents",
+            "Parameters": {
+                "Entries": [
+                    {
+                        "Detail": {
+                            "WorkflowName.$": "$$.StateMachine.Name",
+                            "WorkflowStatus": "SUCCEEDED",
+                            "WorkflowOutput": {
+                                "JobName.$": "$.JobName",
+                                "InstanceName.$": "$.InstanceName",
+                                "InstanceConfig.$": "$.InstanceConfig",
+                                "InstanceDetails.$": "$.InstanceDetails"
+                            }
+                        },
+                        "DetailType": "Replication workflow message",
+                        "EventBusName": "${replication-event-bus-name}",
+                        "Source": "custom.replication"
+                    }
+                ]
+            },
+            "End": true
+        },
+        "Error": {
+            "Type": "Fail",
+            "Error": "Error"
+        }
+    }
+}

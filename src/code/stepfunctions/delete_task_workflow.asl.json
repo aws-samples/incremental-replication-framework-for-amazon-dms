@@ -1,0 +1,113 @@
+{
+    "Comment": "State machine to orachestrate DMS task deletion",
+    "StartAt": "Get task status",
+    "States": {
+        "Get task status": {
+            "Next": "Is task deleted?",
+            "Parameters": {
+                "Filters": [
+                    {
+                        "Name": "replication-task-id",
+                        "Values.$": "States.Array($.JobName)"
+                    }
+                ]
+            },
+            "Resource": "arn:aws:states:::aws-sdk:databasemigration:describeReplicationTasks",
+            "ResultPath": "$.TaskDetails",
+            "ResultSelector": {
+                "ReplicationTaskIdentifier.$": "$.ReplicationTasks[0].ReplicationTaskIdentifier",
+                "SourceEndpointArn.$": "$.ReplicationTasks[0].SourceEndpointArn",
+                "TargetEndpointArn.$": "$.ReplicationTasks[0].TargetEndpointArn",
+                "ReplicationInstanceArn.$": "$.ReplicationTasks[0].ReplicationInstanceArn",
+                "MigrationType.$": "$.ReplicationTasks[0].MigrationType",
+                "Status.$": "$.ReplicationTasks[0].Status",
+                "StopReason.$": "$.ReplicationTasks[0].StopReason",
+                "ReplicationTaskCreationDate.$": "$.ReplicationTasks[0].ReplicationTaskCreationDate",
+                "ReplicationTaskStartDate.$": "$.ReplicationTasks[0].ReplicationTaskStartDate",
+                "RecoveryCheckpoint.$": "$.ReplicationTasks[0].RecoveryCheckpoint",
+                "ReplicationTaskArn.$": "$.ReplicationTasks[0].ReplicationTaskArn",
+                "ReplicationTaskStats.$": "$.ReplicationTasks[0].ReplicationTaskStats"
+            },
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "DatabaseMigration.ResourceNotFoundException"
+                    ],
+                    "ResultPath": "$.TaskException",
+                    "Next": "Send success event"
+                }
+            ],
+            "Type": "Task"
+        },
+        "Is task deleted?": {
+            "Choices": [
+                {
+                    "Variable": "$.TaskDetails.Status",
+                    "StringEquals": "deleting",
+                    "Next": "Wait for task deletion"
+                },
+                {
+                    "Variable": "$.TaskDetails.Status",
+                    "StringEquals": "stopped",
+                    "Next": "Delete task"
+                }
+            ],
+            "Default": "Error",
+            "Type": "Choice"
+        },
+        "Delete task": {
+            "Next": "Wait for task deletion",
+            "Parameters": {
+                "ReplicationTaskArn.$": "$.TaskDetails.ReplicationTaskArn"
+            },
+            "Resource": "arn:aws:states:::aws-sdk:databasemigration:deleteReplicationTask",
+            "ResultPath": "$.TaskDetails",
+            "ResultSelector": {
+                "ReplicationTaskIdentifier.$": "$.ReplicationTask.ReplicationTaskIdentifier",
+                "SourceEndpointArn.$": "$.ReplicationTask.SourceEndpointArn",
+                "TargetEndpointArn.$": "$.ReplicationTask.TargetEndpointArn",
+                "ReplicationInstanceArn.$": "$.ReplicationTask.ReplicationInstanceArn",
+                "MigrationType.$": "$.ReplicationTask.MigrationType",
+                "Status.$": "$.ReplicationTask.Status",
+                "StopReason.$": "$.ReplicationTask.StopReason",
+                "ReplicationTaskCreationDate.$": "$.ReplicationTask.ReplicationTaskCreationDate",
+                "ReplicationTaskStartDate.$": "$.ReplicationTask.ReplicationTaskStartDate",
+                "RecoveryCheckpoint.$": "$.ReplicationTask.RecoveryCheckpoint",
+                "ReplicationTaskArn.$": "$.ReplicationTask.ReplicationTaskArn"
+            },
+            "Type": "Task"
+        },
+        "Wait for task deletion": {
+            "Next": "Get task status",
+            "Seconds": 30,
+            "Type": "Wait"
+        },
+        "Send success event": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::events:putEvents",
+            "Parameters": {
+                "Entries": [
+                    {
+                        "Detail": {
+                            "WorkflowName.$": "$$.StateMachine.Name",
+                            "WorkflowStatus": "SUCCEEDED",
+                            "WorkflowOutput": {
+                                "JobName.$": "$.JobName",
+                                "InstanceName.$": "$.InstanceName",
+                                "TaskDetails.$": "$.TaskDetails"
+                            }
+                        },
+                        "DetailType": "Replication workflow message",
+                        "EventBusName": "${replication-event-bus-name}",
+                        "Source": "custom.replication"
+                    }
+                ]
+            },
+            "End": true
+        },
+        "Error": {
+            "Type": "Fail",
+            "Error": "Error"
+        }
+    }
+}

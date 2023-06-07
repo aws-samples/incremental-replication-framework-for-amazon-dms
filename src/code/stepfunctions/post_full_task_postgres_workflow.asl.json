@@ -1,0 +1,80 @@
+{
+    "Comment": "State machine to orachestrate activities specific to Postgres after Full Replication DMS Task execution",
+    "StartAt": "Get job config from DynamoDB",
+    "States": {
+        "Get job config from DynamoDB": {
+            "Type": "Task",
+            "Parameters": {
+                "TableName": "${job-config-table}",
+                "KeyConditionExpression": "job_name = :value",
+                "ExpressionAttributeValues": {
+                    ":value": {
+                        "S.$": "$.JobName"
+                    }
+                },
+                "ScanIndexForward": "True"
+            },
+            "Resource": "arn:aws:states:::aws-sdk:dynamodb:query",
+            "Next": "Duplicate source replication slot",
+            "ResultPath": "$.JobConfig",
+            "ResultSelector": {
+                "job_name.$": "$.Items[0].job_name.S",
+                "job_checkpoint_name.$": "$.Items[0].job_checkpoint_name.S",
+                "migration_type.$": "$.Items[0].migration_type.S",
+                "source_endpoint_id.$": "$.Items[0].source_endpoint_id.S",
+                "target_endpoint_id.$": "$.Items[0].target_endpoint_id.S"
+            }
+        },
+        "Duplicate source replication slot": {
+            "Next": "Notify task outputs",
+            "Parameters": {
+                "FunctionName": "${duplicate_replication_slot_lambda_arn}",
+                "Payload.$": "$"
+            },
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "ResultPath": "$.PostTaskDetails",
+            "Type": "Task"
+        },
+        "Notify task outputs": {
+            "Type": "Task",
+            "Next": "Send success event",
+            "Resource": "arn:aws:states:::sns:publish",
+            "Parameters": {
+                "TopicArn": "${notifications-topic-arn}",
+                "Message": {
+                    "WorkflowName.$": "$$.StateMachine.Name",
+                    "ExecutionName.$": "$$.Execution.Name",
+                    "JobName.$": "$.JobName",
+                    "InstanceName.$": "$.InstanceName",
+                    "PostTaskDetails.$": "$.PostTaskDetails"
+                }
+            },
+            "ResultPath": "$.SNSOutput"
+        },
+        "Send success event": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::events:putEvents",
+            "Parameters": {
+                "Entries": [
+                    {
+                        "Detail": {
+                            "WorkflowName.$": "$$.StateMachine.Name",
+                            "WorkflowStatus": "SUCCEEDED",
+                            "WorkflowOutput": {
+                                "JobName.$": "$.JobName",
+                                "InstanceName.$": "$.InstanceName",
+                                "JobConfig.$": "$.JobConfig",
+                                "PostTaskDetails.$": "$.PostTaskDetails"
+                            }
+                        },
+                        "DetailType": "Replication workflow message",
+                        "EventBusName": "${replication-event-bus-name}",
+                        "Source": "custom.replication"
+                    }
+                ]
+            },
+            "ResultPath": "$.EventsOutput",
+            "End": true
+        }
+    }
+}

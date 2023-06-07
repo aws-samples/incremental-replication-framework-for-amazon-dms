@@ -1,0 +1,15 @@
+{
+    "rules": [
+        {
+            "rule-type": "selection",
+            "rule-id": "057301960",
+            "rule-name": "057301960",
+            "object-locator": {
+                "schema-name": "studentdb%",
+                "table-name": "%"
+            },
+            "rule-action": "include",
+            "filters": []
+        }
+    ]
+}

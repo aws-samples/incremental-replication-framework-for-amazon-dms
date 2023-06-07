@@ -1,0 +1,248 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >-
+  This template creates a Multi-AZ, multi-subnet VPC infrastructure with managed NAT gateways in the public subnet for each 
+  Availability Zone.
+
+Resources:
+  
+  DHCPOptions:
+    Type: AWS::EC2::DHCPOptions
+    Properties:
+      DomainName: !Sub '${AWS::Region}.compute.internal'
+      DomainNameServers:
+        - AmazonProvidedDNS
+  
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      InstanceTenancy: default
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-VPC
+  
+  VPCDHCPOptionsAssociation:
+    Type: AWS::EC2::VPCDHCPOptionsAssociation
+    Properties:
+      VpcId: !Ref VPC
+      DhcpOptionsId: !Ref DHCPOptions
+  
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+  
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+  
+  PrivateSubnet1A:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.0.0/19
+      AvailabilityZone: !Sub ${AWS::Region}a
+  
+  PrivateSubnet2A:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.32.0/19
+      AvailabilityZone: !Sub ${AWS::Region}b
+  
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W33
+            reason: >-
+              (W33) EC2 Subnet should not have MapPublicIpOnLaunch set to true.
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.128.0/20
+      AvailabilityZone: !Sub ${AWS::Region}a
+      MapPublicIpOnLaunch: true
+  
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W33
+            reason: >-
+              (W33) EC2 Subnet should not have MapPublicIpOnLaunch set to true.
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.144.0/20
+      AvailabilityZone: !Sub ${AWS::Region}b
+      MapPublicIpOnLaunch: true
+  
+  PrivateSubnet1ARouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+  
+  PrivateSubnet1ARoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateSubnet1ARouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NATGateway1
+  
+  PrivateSubnet1ARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1A
+      RouteTableId: !Ref PrivateSubnet1ARouteTable
+  
+  PrivateSubnet2ARouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+  
+  PrivateSubnet2ARoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateSubnet2ARouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NATGateway2
+  
+  PrivateSubnet2ARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet2A
+      RouteTableId: !Ref PrivateSubnet2ARouteTable
+  
+  PublicSubnetRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+  
+  PublicSubnetRoute:
+    DependsOn: VPCGatewayAttachment
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PublicSubnetRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicSubnetRouteTable
+  
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicSubnetRouteTable
+  
+  NAT1EIP:
+    DependsOn: VPCGatewayAttachment
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+  
+  NAT2EIP:
+    DependsOn: VPCGatewayAttachment
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+  
+  NATGateway1:
+    DependsOn: VPCGatewayAttachment
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NAT1EIP.AllocationId
+      SubnetId: !Ref PublicSubnet1
+  
+  NATGateway2:
+    DependsOn: VPCGatewayAttachment
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NAT2EIP.AllocationId
+      SubnetId: !Ref PublicSubnet2
+  
+  S3VPCEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - EIAMPolicyActionWildcard
+            - EPolicyWildcardPrincipal
+          ignore_reasons:
+            EIAMPolicyActionWildcard: >-
+              This is based on AWS documentation- filtering via bucket policy
+              is generally preferred.
+            EIAMPolicyWildcardResource: >-
+              This is based on AWS documentation- filtering via bucket policy
+              is generally preferred.
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action: '*'
+            Effect: Allow
+            Resource: '*'
+            Principal: '*'
+      RouteTableIds:
+        - !Ref PrivateSubnet1ARouteTable
+        - !Ref PrivateSubnet2ARouteTable
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.s3
+      VpcId: !Ref VPC
+
+  GeneralSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref VPC
+      GroupDescription: General Security Group (All ingress / egress open)
+      SecurityGroupIngress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+
+Outputs:
+  
+  VPCID:
+    Description: VPC ID.
+    Value: !Ref VPC
+    Export:
+      Name: !Sub ${AWS::StackName}-VPCID
+  
+  PrivateSubnet1AID:
+    Description: Private subnet 1A ID in Availability Zone 1.
+    Value: !Ref PrivateSubnet1A
+    Export:
+      Name: !Sub ${AWS::StackName}-PrivateSubnet1AID
+  
+  PrivateSubnet2AID:
+    Description: Private subnet 2A ID in Availability Zone 2.
+    Value: !Ref PrivateSubnet2A
+    Export:
+      Name: !Sub ${AWS::StackName}-PrivateSubnet2AID
+  
+  PublicSubnet1ID:
+    Description: Public subnet 1 ID in Availability Zone 1.
+    Value: !Ref PublicSubnet1
+    Export:
+      Name: !Sub ${AWS::StackName}-PublicSubnet1ID
+  
+  PublicSubnet2ID:
+    Description: Public subnet 2 ID in Availability Zone 2.
+    Value: !Ref PublicSubnet2
+    Export:
+      Name: !Sub ${AWS::StackName}-PublicSubnet2ID
+
+  GeneralSecurityGroupID:
+    Description: General Security Group ID (All ingress / egress open).
+    Value: !Ref GeneralSecurityGroup
+    Export:
+      Name: !Sub ${AWS::StackName}-GeneralSecurityGroupID
+

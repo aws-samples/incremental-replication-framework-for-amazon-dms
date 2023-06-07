@@ -1,0 +1,10 @@
+[
+    {
+        "ParameterKey": "SourceAuroraEngine",
+        "ParameterValue": "postgres"
+    },
+    {
+        "ParameterKey": "TargetAuroraEngine",
+        "ParameterValue": "mysql"
+    }
+]

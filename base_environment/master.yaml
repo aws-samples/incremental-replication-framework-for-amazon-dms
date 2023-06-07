@@ -1,0 +1,92 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Resources to be created by the common stack
+
+Parameters:
+  
+  SourceAuroraEngine:
+    Type: String
+    Description: >-
+      Type of aurora engine to deploy as source database (only 'mysql' or 'postgres' values are alowed).
+    AllowedValues: ['mysql', 'postgres']
+
+  TargetAuroraEngine:
+    Type: String
+    Description: >-
+      Type of aurora engine to deploy as target database (only 'mysql' or 'postgres' values are alowed).
+    AllowedValues: ['mysql', 'postgres']
+
+Conditions:
+  
+  AuroraMysqlSource: !Equals 
+    - !Ref SourceAuroraEngine
+    - mysql
+  
+  AuroraPostgresSource: !Equals 
+    - !Ref SourceAuroraEngine
+    - postgres
+
+  AuroraMysqlTarget: !Equals 
+    - !Ref TargetAuroraEngine
+    - mysql
+
+  AuroraPostgresTarget: !Equals 
+    - !Ref TargetAuroraEngine
+    - postgres
+
+Resources:
+  
+  ######## VPC #########
+  VPCStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: ./stacks/vpc.yaml
+
+  ######## Cloud9 #########
+  C9IDE:
+    Type: AWS::Cloud9::EnvironmentEC2
+    Properties:
+      Name: replication-base-environment-ide
+      AutomaticStopTimeMinutes: 30
+      SubnetId: !GetAtt [VPCStack, Outputs.PublicSubnet1ID]
+      InstanceType: t3.micro
+
+  ######## Databases #########
+  AuroraMysqlSourceStack:
+    Type: AWS::CloudFormation::Stack
+    Condition: AuroraMysqlSource
+    Properties:
+      TemplateURL: ./stacks/aurora-mysql.yaml
+      Parameters:
+        VPCID: !GetAtt [VPCStack, Outputs.VPCID]
+        Subnet1ID: !GetAtt [VPCStack, Outputs.PrivateSubnet1AID]
+        Subnet2ID: !GetAtt [VPCStack, Outputs.PrivateSubnet2AID]
+
+  AuroraPostgresSourceStack:
+    Type: AWS::CloudFormation::Stack
+    Condition: AuroraPostgresSource
+    Properties:
+      TemplateURL: ./stacks/aurora-postgres.yaml
+      Parameters:
+        VPCID: !GetAtt [VPCStack, Outputs.VPCID]
+        Subnet1ID: !GetAtt [VPCStack, Outputs.PrivateSubnet1AID]
+        Subnet2ID: !GetAtt [VPCStack, Outputs.PrivateSubnet2AID]
+
+  AuroraMysqlTargetStack:
+    Type: AWS::CloudFormation::Stack
+    Condition: AuroraMysqlTarget
+    Properties:
+      TemplateURL: ./stacks/aurora-mysql.yaml
+      Parameters:
+        VPCID: !GetAtt [VPCStack, Outputs.VPCID]
+        Subnet1ID: !GetAtt [VPCStack, Outputs.PrivateSubnet1AID]
+        Subnet2ID: !GetAtt [VPCStack, Outputs.PrivateSubnet2AID]
+
+  AuroraPostgresTargetStack:
+    Type: AWS::CloudFormation::Stack
+    Condition: AuroraPostgresTarget
+    Properties:
+      TemplateURL: ./stacks/aurora-postgres.yaml
+      Parameters:
+        VPCID: !GetAtt [VPCStack, Outputs.VPCID]
+        Subnet1ID: !GetAtt [VPCStack, Outputs.PrivateSubnet1AID]
+        Subnet2ID: !GetAtt [VPCStack, Outputs.PrivateSubnet2AID]
